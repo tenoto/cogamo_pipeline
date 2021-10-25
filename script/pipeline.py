@@ -66,7 +66,9 @@ class Archive(object):
 			'bstdistfile': [],	
 			'bstlc_mean':[],
 			'bstlc_sigma':[],
-			'bstlc_area':[],			
+			'bstlc_area':[],	
+			'bstalert_link': [],
+			'bstalert_file': [],
 			'lclink': [],
 			'lcfile': [],
 			'phalink': [],
@@ -115,6 +117,8 @@ class Archive(object):
 		self.dict['csvlink'].append('<a href="%s">%s</a>' % (file_path,filename))
 		self.dict['csvpath'].append(file_path)		
 		self.dict['csvfile'].append(filename)
+		self.dict['bstalert_link'].append('--')
+		self.dict['bstalert_file'].append('--')
 		self.dict['lclink'].append('--')
 		self.dict['lcfile'].append('--')			
 		self.dict['phalink'].append('--')
@@ -183,6 +187,17 @@ class Archive(object):
 		self.df.iloc[index]['bstlc_sigma'] = '%.1f' % fit_values['sigma']
 		self.df.iloc[index]['bstlc_area'] = '%.1f' % fit_values['area']			
 
+		bstalert_pdf = evt.burst_alert(
+			tbin=self.param['burst_alert_tbin'],
+			tmin=self.param['plot_energy_sorted_curves_tmin'],
+			tmax=self.param['plot_energy_sorted_curves_tmax'],
+			pha_min=self.param['burst_alert_pha_min'],
+			pha_max=self.param['burst_alert_pha_max'],
+			runave_width=self.param['burst_alert_width'],
+			runave_threshold=self.param['burst_alert_threshold'])
+		self.df.iloc[index]['bstalert_link'] = '<a href=\"../%s\">alert</a>' % (bstalert_pdf)
+		self.df.iloc[index]['bstalert_file'] = bstalert_pdf
+
 		self.df.iloc[index]['process'] = 'DONE'
 
 	def write(self):
@@ -195,7 +210,7 @@ class Archive(object):
 	
 		self.df.to_csv('%s/%s.csv' % (self.param['outdir'],self.param['archive_name']))
 
-		self.df.drop(['csvpath','csvfile','lcfile','phafile','bstlcfile','bstdistfile'],axis=1).to_html('%s/%s.html' % (self.param['outdir'],self.param['archive_name']), render_links=True, escape=False)
+		self.df.drop(['csvpath','csvfile','lcfile','phafile','bstlcfile','bstdistfile','bstalert_file'],axis=1).to_html('%s/%s.html' % (self.param['outdir'],self.param['archive_name']), render_links=True, escape=False)
 
 class EventFile(object):
 	def __init__(self, file_path):
@@ -530,6 +545,68 @@ class EventFile(object):
 
 		return outpdf, fit.values, fit.errors, mask_burst_candidates
 
+	def burst_alert(self,tbin=20.0,tmin=0.0,tmax=3600.,
+		pha_min=None,pha_max=None,runave_width=15,runave_threshold=3.0):
+		sys.stdout.write('----- {} -----\n'.format(sys._getframe().f_code.co_name))
+
+		if pha_min == 'None':
+			pha_min = None
+		if pha_max == 'None':
+			pha_max = None
+
+		lchist,suffix = self.extract_curve(tbin=tbin,tmin=tmin,tmax=tmax,
+		pha_min=pha_min,pha_max=pha_max)
+
+		# https://stackoverflow.com/questions/13728392/moving-average-or-running-mean
+		runave = np.convolve(lchist.hist, np.ones(runave_width)/runave_width, 
+			mode='full')[0:len(lchist.hist)]
+		sigma = np.sqrt(runave * tbin)/tbin
+		runave_limit = runave_threshold * sigma + runave 
+		print(runave_limit)
+
+		outpdf = '%s/%s_alert_%s.pdf' % (self.outdir,self.basename,suffix)
+
+		fig, ax = plt.subplots(1,1, figsize=(11.69,8.27))		
+
+		plt.errorbar(lchist.bins,lchist.hist,
+			yerr=lchist.err,marker='',drawstyle='steps-mid')
+		plt.plot(lchist.bins,runave,'r',linewidth=5)
+		plt.plot(lchist.bins,runave_limit,'r--',linewidth=5)
+
+		flag_glow_candidate = lchist.hist > runave_limit
+		flag_edgeok = np.arange(len(lchist.hist)) > runave_width-1
+		mask_burst_candidates = np.logical_and(flag_glow_candidate,flag_edgeok)
+		for x in lchist.bins[mask_burst_candidates]:
+			tstart = x - 0.5 * tbin 
+			tstop = x + 0.5 * tbin	
+			ax.axvspan(tstart, tstop, color="red", alpha=0.3)
+
+		plt.xlabel('Time (sec)', fontsize=FONTSIZE)
+		if tbin < 1.0:
+			plt.ylabel('Counts/%d ms' % tbin*1000, fontsize=FONTSIZE)
+		else:
+			plt.ylabel('Counts/%d sec' % tbin, fontsize=FONTSIZE)
+		plt.title('%s (%s ch <= pha <= %s ch, runave: wid=%d, th=%.2f)' % (self.basename,pha_min,pha_max,runave_width,runave_threshold),
+			fontsize=FONTSIZE)
+		#plt.xscale('log')				
+		#plt.yscale('log')
+		plt.xlim(tmin,tmax)
+		plt.tight_layout(pad=2)
+		plt.tick_params(labelsize=FONTSIZE)
+		plt.rcParams["font.family"] = "serif"
+		plt.rcParams["mathtext.fontset"] = "dejavuserif"		
+
+		ax.minorticks_on()
+		ax.grid(True)
+		ax.grid(axis='both',which='major', linestyle='--', color='#000000')
+		ax.grid(axis='both',which='minor', linestyle='--')	
+		ax.tick_params(axis="both", which='major', direction='in', length=5)
+		ax.tick_params(axis="both", which='minor', direction='in', length=3)
+	
+		plt.savefig(outpdf)	
+		print(outpdf)
+		return outpdf 
+	
 ################################
 # MAIN PROCESS
 ################################
@@ -540,6 +617,8 @@ cogamo_archive.convert_to_dataframe()
 #cogamo_archive.process(1)
 #cogamo_archive.process(307)
 #cogamo_archive.process(308)
+#cogamo_archive.write()
+#exit()
 for index in range(len(cogamo_archive.df)):
 	cogamo_archive.process(index)
 	cogamo_archive.write()
